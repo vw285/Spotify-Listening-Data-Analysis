@@ -1,6 +1,6 @@
 ---
 title: "sl_proj_2"
-author: "Violet Wang"
+author: "Violet Wang, Michele"
 date: "2025-04-02"
 output: html_document
 ---
