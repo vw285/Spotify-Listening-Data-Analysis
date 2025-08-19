@@ -1,0 +1,301 @@
+---
+title: "sl_proj_2"
+author: "Vanessa Lattes"
+date: "2025-04-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+rm(list = ls()) #Clear workspace
+
+library("tidyverse")          #For data manipulation
+library("ggplot2")            #For nice plots
+library('Metrics')
+library('gridExtra')
+library('dplyr')
+library("ISLR")
+library("glmnet")
+library("MASS")
+library("caret")
+library("splines")
+library("boot")
+library("class")
+library("nnet")
+library('Rmpfr')
+```
+
+```{r Load in data}
+
+data <- read.csv("~/Desktop/spotify-2023.csv", header = TRUE, sep = ",")
+print(data)
+
+data$streams <- as.numeric(data$streams)
+mean <- mean(data$streams, na.rm = TRUE)
+
+# data cleaning
+data <- data %>%
+  mutate(average_streams = case_when(
+    streams >= mean(streams, na.rm = TRUE) ~ 1,  # Use the actual computed mean
+    streams <= mean(streams, na.rm = TRUE) ~ 0,  # Use the actual computed mean
+    TRUE ~ NA_real_  # Default case for unexpected values
+  ))
+
+```
+
+## Random Forest
+
+```{r Looking at Data}
+cleaned <- dplyr::select(data, -key, -artist.s._name, -track_name, -in_deezer_playlists, -in_shazam_charts, -mode, -streams)
+```
+
+```{r Test/ Train Split}
+set.seed(1)
+
+# training and test split 80% train 20% test
+train_indices <- sample(1:nrow(cleaned), size = 0.8 * nrow(cleaned))
+
+# split
+train_data <- cleaned[train_indices, ]
+test_data <- cleaned[-train_indices, ]
+
+```
+
+```{r}
+library(randomForest)
+
+# Convert target variable to factor for classification
+train_data$average_streams <- as.factor(train_data$average_streams)
+test_data$average_streams <- as.factor(test_data$average_streams)
+levels(train_data$average_streams)
+# Fit the Random Forest model
+set.seed(123)  # for reproducibility
+rf_model <- randomForest(average_streams ~ ., data = train_data, importance = TRUE)
+print(rf_model)
+rf_model$err.rate
+
+
+# Plot the error rate
+plot(rf_model, main = "OOB Error Rate vs Number of Trees")
+# Add legend
+legend("topright",
+       legend = c("Overall OOB", "Class 1: [low stream]", "Class 2: [high stream]"),
+       col = c("black", "red", "green"),
+       lty = c(1, 2, 3),
+       bty = "n",  # no box around legend
+       cex = 0.9)
+
+# Predict on the test set
+rf_predictions <- predict(rf_model, newdata = test_data)
+
+# Confusion matrix and accuracy
+confusion <- confusionMatrix(rf_predictions, test_data$average_streams)
+print(confusion)
+
+# Extract confusion matrix data
+conf_mat <- as.table(confusion$table)
+conf_df <- as.data.frame(conf_mat)
+colnames(conf_df) <- c("Predicted", "Actual", "Freq")
+
+# Neon green heatmap on light theme
+ggplot(conf_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#ccffcc", high = "#00FF00") +  # light green to neon green
+  labs(title = "Confusion Matrix - Random Forest",
+       x = "Actual Label", y = "Predicted Label") +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+library(pROC)
+
+# Get predicted probabilities for class "1"
+rf_probs <- predict(rf_model, newdata = test_data, type = "prob")[, "1"]
+
+# Compute ROC
+roc_obj <- roc(test_data$average_streams, rf_probs)
+
+# Plot ROC curve
+plot(roc_obj, col = "#1f77b4", lwd = 2, main = "Random Forest ROC Curve")
+
+# Display AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
+
+# Variable importance (already computed if you used importance=TRUE)
+varImpPlot(rf_model, 
+           main = "Variable Importance - Random Forest", 
+           pch = 19, col = "#1DB954")
+# Load tools to extract and plot a tree
+library(randomForest)
+install.packages("partykit")
+
+library(partykit)
+# Fit a small single tree for visualization purposes
+small_rf <- ctree(average_streams ~ ., data = train_data)
+plot(small_rf, main = "Example Decision Tree")
+
+
+```
+
+## SVM
+
+```{r}
+# Load required libraries
+library(e1071)
+library(caret)
+library(pROC)
+library(ggplot2)
+library(dplyr)
+
+# Load and prepare data
+data <- read.csv("~/Desktop/spotify-2023.csv", header = TRUE, sep = ",")
+data$streams <- as.numeric(data$streams)
+mean_streams <- mean(data$streams, na.rm = TRUE)
+
+# Create binary target variable and remove NAs
+data <- data %>%
+  mutate(average_streams = as.factor(ifelse(streams >= mean_streams, 1, 0))) %>%
+  na.omit()
+
+# Set seed for reproducibility
+set.seed(1)
+
+# Remove non-feature columns
+cleaned <- dplyr::select(
+  data, 
+  -key, -artist.s._name, -track_name, 
+  -in_deezer_playlists, -in_shazam_charts, 
+  -mode, -streams
+)
+
+# Split data
+train_indices <- sample(1:nrow(cleaned), size = 0.8 * nrow(cleaned))
+train_data <- cleaned[train_indices, ]
+test_data <- cleaned[-train_indices, ]
+
+# Preprocess: center and scale feature columns (exclude target column)
+preproc <- preProcess(train_data[, -ncol(train_data)], method = c("center", "scale"))
+train_data_scaled <- train_data
+test_data_scaled <- test_data
+
+train_data_scaled[, -ncol(train_data_scaled)] <- predict(preproc, train_data[, -ncol(train_data)])
+test_data_scaled[, -ncol(test_data_scaled)] <- predict(preproc, test_data[, -ncol(test_data)])
+
+# Train SVM model
+svm_model <- svm(
+  average_streams ~ ., 
+  data = train_data_scaled,
+  type = "C-classification",
+  kernel = "radial",
+  probability = TRUE
+)
+
+# Make predictions
+svm_pred <- predict(svm_model, test_data_scaled, probability = TRUE)
+svm_prob <- attr(svm_pred, "probabilities")[, "1"]
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(svm_pred, test_data_scaled$average_streams, positive = "1")
+print(conf_matrix)
+
+# ROC Curve
+roc_obj <- roc(as.numeric(as.character(test_data_scaled$average_streams)), svm_prob)
+auc_value <- auc(roc_obj)
+cat("Area Under the Curve (AUC):", auc_value, "\n")
+
+# Plot ROC Curve
+plot(roc_obj, col = "#1f77b4", lwd = 2, main = "SVM Model ROC Curve")
+
+# Extract confusion matrix data
+conf_mat <- as.table(conf_matrix$table)
+conf_df <- as.data.frame(conf_mat)
+colnames(conf_df) <- c("Predicted", "Actual", "Freq")
+
+ggplot(conf_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6, fontface = "bold") +
+  scale_fill_gradient(low = "#ccffcc", high = "#00FF00") +  # light green to neon green
+  labs(
+    title = "Confusion Matrix - SVM",
+    x = "Actual Label",
+    y = "Predicted Label"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+## Trying to tune the SVM's cost and gamma parameters using a grid search with cross-validation
+
+```{r}
+
+# Load and prepare data
+data <- read.csv("~/Desktop/spotify-2023.csv", header = TRUE, sep = ",")
+data$streams <- as.numeric(data$streams)
+mean_streams <- mean(data$streams, na.rm = TRUE)
+
+# Create binary target variable and remove NAs
+data <- data %>%
+  mutate(average_streams = as.factor(ifelse(streams >= mean_streams, 1, 0))) %>%
+  na.omit()
+
+# Set seed for reproducibility
+set.seed(1)
+
+cleaned <- dplyr::select(data, -key, -artist.s._name, -track_name, -in_deezer_playlists, -in_shazam_charts, -mode, -streams)
+
+# Split data
+train_indices <- sample(1:nrow(cleaned), size = 0.8 * nrow(cleaned))
+train_data <- cleaned[train_indices, ]
+test_data <- cleaned[-train_indices, ]
+
+# Preprocess: center and scale feature columns (exclude target column)
+preproc <- preProcess(train_data[, -ncol(train_data)], method = c("center", "scale"))
+train_data_scaled <- train_data
+test_data_scaled <- test_data
+
+train_data_scaled[, -ncol(train_data_scaled)] <- predict(preproc, train_data[, -ncol(train_data)])
+test_data_scaled[, -ncol(test_data_scaled)] <- predict(preproc, test_data[, -ncol(test_data)])
+
+# Set up training control with 5-fold cross-validation
+tune_ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Convert factor levels to "X0" and "X1" for caret compatibility
+train_data_scaled$average_streams <- factor(train_data_scaled$average_streams, levels = c("0", "1"), labels = c("X0", "X1"))
+test_data_scaled$average_streams <- factor(test_data_scaled$average_streams, levels = c("0", "1"), labels = c("X0", "X1"))
+
+# Define tuning grid
+tune_grid <- expand.grid(
+  C = 2^(-2:4),       # cost parameter
+  sigma = 2^(-10:2)   # kernel width (gamma equivalent)
+)
+
+# Train SVM with radial kernel using caret
+svm_tuned <- train(
+  average_streams ~ ., 
+  data = train_data_scaled,
+  method = "svmRadial",
+  metric = "ROC",           # optimize based on AUC
+  tuneGrid = tune_grid,
+  trControl = tune_ctrl,
+  preProcess = NULL         # already scaled earlier
+)
+
+# Make predictions with the tuned model
+svm_pred <- predict(svm_tuned, test_data_scaled)
+svm_prob <- predict(svm_tuned, test_data_scaled, type = "prob")[, "X1"]
+
+# Confusion Matrix
+conf_matrix <- confusionMatrix(svm_pred, test_data_scaled$average_streams, positive = "X1")
+print(conf_matrix)
+
+# ROC Curve
+roc_obj <- roc(as.numeric(test_data_scaled$average_streams == "X1"), svm_prob)
+auc_value <- auc(roc_obj)
+cat("Area Under the Curve (AUC):", auc_value, "\n")
+
+# Plot ROC Curve
+plot(roc_obj, col = "#1f77b4", lwd = 2, main = "Tuned SVM ROC Curve")
+```

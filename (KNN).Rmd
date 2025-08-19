@@ -1,0 +1,169 @@
+---
+title: "sl_proj_2"
+author: "Violet Wang"
+date: "2025-04-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+rm(list = ls()) #Clear workspace
+
+library("tidyverse")          #For data manipulation
+library("ggplot2")            #For nice plots
+library('Metrics')
+library('gridExtra')
+library('dplyr')
+library("ISLR")
+library("glmnet")
+library("MASS")
+library("caret")
+library("splines")
+library("boot")
+library("class")
+library("nnet")
+library('Rmpfr')
+library('reshape2')
+library('pROC')
+```
+
+```{r Load in data}
+
+data <- read.csv("/Users/wangjiaqi/Downloads/spotify-2023.csv", header = TRUE, sep = ",")
+
+
+data$streams <- as.numeric(data$streams)
+mean <- mean(data$streams, na.rm = TRUE)
+
+# data cleaning
+data <- data %>%
+  mutate(average_streams = case_when(
+    streams >= mean(streams, na.rm = TRUE) ~ 1,  # Use the actual computed mean
+    streams <= mean(streams, na.rm = TRUE) ~ 0,  # Use the actual computed mean
+    TRUE ~ NA_real_  # Default case for unexpected values
+  ))
+data <- na.omit(data)
+```
+
+```{r Looking at Data}
+cleaned <- dplyr::select(data, -key, -artist.s._name, -track_name, -in_deezer_playlists, -in_shazam_charts, -mode, -streams)
+
+cor_matrix <- cor(cleaned, use = "complete.obs", method = "pearson")
+cor_matrix_melted <- melt(cor_matrix)
+
+# Plot the heatmap with correlation numbers using ggplot2
+ggplot(cor_matrix_melted, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "black", high = "green", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = NULL, y = NULL, fill = "Correlation") +
+  geom_text(aes(label = round(value, 2)), color = "black", size = 3)
+```
+
+```{r Test/ Train Split}
+set.seed(1)
+
+# training and test split 80% train 20% test
+train_indices <- sample(1:nrow(cleaned), size = 0.8 * nrow(cleaned))
+
+# split
+train_data <- cleaned[train_indices, ]
+test_data <- cleaned[-train_indices, ]
+
+```
+
+```{r}
+# Bar chart of song distribution by release year
+ggplot(data, aes(x = as.factor(released_year))) +
+  geom_bar(fill = "green") +
+  labs(title = "Distribution of Songs by Release Year",
+       x = "Release Year",
+       y = "Number of Songs") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+
+```
+
+```{r}
+# Extract features (predictors) and target
+train_x <- dplyr::select(train_data, -average_streams)
+test_x <- dplyr::select(test_data, -average_streams)
+
+# Scale features
+train_x_scaled <- scale(train_x)
+test_x_scaled <- scale(test_x, center = attr(train_x_scaled, "scaled:center"),
+                                scale = attr(train_x_scaled, "scaled:scale"))
+
+train_y <- train_data$average_streams
+test_y <- test_data$average_streams
+```
+
+```{r}
+set.seed(1)
+# Initialize a vector to store accuracy for different k values
+k_values <- 1:20
+accuracy_values <- numeric(length(k_values))
+
+# Loop through each k value
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  
+  # Run KNN
+  pred <- knn(train = train_x_scaled, test = test_x_scaled, cl = train_y, k = k)
+  
+  # Calculate accuracy
+  accuracy_values[i] <- mean(pred == test_y)
+}
+
+# Create a dataframe for plotting
+knn_results <- data.frame(k = k_values, accuracy = accuracy_values)
+
+# Create a dataframe for plotting
+best_k <- knn_results$k[which.max(knn_results$accuracy)]
+knn_results <- data.frame(k = k_values, accuracy = accuracy_values)
+best_acc <- max(knn_results$accuracy)
+cat("Best k =", best_k, "with accuracy =", round(best_acc, 4), "\n")
+
+# Plot
+ggplot(knn_results, aes(x = k, y = accuracy)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 2) +
+  labs(title = "KNN Accuracy by Number of Neighbors (k)",
+       x = "Number of Neighbors (k)",
+       y = "Accuracy") +
+  theme_minimal()
+
+# Step 1: Run KNN
+knn_fit <- class::knn(train = train_x_scaled, test = test_x_scaled, cl = train_y, k = 12)
+#caret::confusionMatrix(data = knn_fit, reference = test_y)
+
+# Ensure both predicted and actual values are factors with the same levels
+predicted <- factor(knn_fit, levels = c(0, 1))
+actual <- factor(test_y, levels = c(0, 1))
+
+# Now compute the confusion matrix correctly
+conf_matrix1 <- caret::confusionMatrix(data = predicted, reference = actual)
+
+# Convert to data frame and rename for plotting
+conf_df <- as.data.frame(conf_matrix1$table)
+colnames(conf_df) <- c("Prediction", "Actual", "Freq")
+
+# Plot confusion matrix
+library(ggplot2)
+
+ggplot(conf_df, aes(x = Actual, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), size = 6, color = "black") +
+  scale_fill_gradient(low = "#ccffcc", high = "#00cc00") +
+  labs(title = "Confusion Matrix for K = 12",
+       x = "Actual Label",
+       y = "Predicted Label") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12))
+```
